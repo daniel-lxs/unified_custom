@@ -72,7 +72,7 @@ export function applyContextMatching(hunk: Hunk, content: string[], matchPositio
     newResult.slice(matchPosition, matchPosition + windowSize).join('\n')
   )
 
-  const confidence = validateEditResult(hunk, newResult.slice(matchPosition, matchPosition + windowSize).join('\n'));
+  const confidence = validateEditResult(hunk, newResult.slice(matchPosition, matchPosition + windowSize).join('\n'), 'context');
 
   return { 
     confidence: similarity * confidence,
@@ -89,135 +89,44 @@ export function applyDMP(hunk: Hunk, content: string[], matchPosition: number): 
 
   const dmp = new diff_match_patch();
   
-  // Calculate edit region - look for block boundaries
-  let editRegionStart = matchPosition;
-  let editRegionEnd = matchPosition + hunk.changes.length;
+  // Build BEFORE block (context + removals)
+  const beforeLines = hunk.changes
+    .filter(change => change.type === 'context' || change.type === 'remove')
+    .map(change => change.originalLine || (change.indent + change.content));
   
-  // Look back for block start (e.g. enum declaration)
-  for (let i = matchPosition - 1; i >= 0; i--) {
-    const line = content[i]?.trim();
-    if (line && (line.startsWith('export') || line.startsWith('enum') || line.endsWith('{'))) {
-      editRegionStart = i;
-      break;
-    }
-    if (line === '') break; // Stop at empty line
-  }
+  // Build AFTER block (context + additions)
+  const afterLines = hunk.changes
+    .filter(change => change.type === 'context' || change.type === 'add')
+    .map(change => change.originalLine || (change.indent + change.content));
   
-  // Look ahead for block end
-  for (let i = editRegionEnd; i < content.length; i++) {
-    const line = content[i]?.trim();
-    if (line === '}') {
-      editRegionEnd = i + 1; // Include the closing brace
-      break;
-    }
-    if (line === '') break; // Stop at empty line
-  }
+  // Convert to text
+  const beforeText = beforeLines.join('\n');
+  const afterText = afterLines.join('\n');
   
-  const editRegion = content.slice(editRegionStart, editRegionEnd);
-  console.log('\nDMP Debug - Edit Region:');
-  console.log('editRegionStart:', editRegionStart);
-  console.log('editRegionEnd:', editRegionEnd);
-  console.log('editRegion:', editRegion);
+  // Create the patch
+  const patch = dmp.patch_make(beforeText, afterText);
   
-  const editText = editRegion.join('\n');
-  console.log('\nDMP Debug - Edit Text:');
-  console.log(editText);
+  // Get the target text from content
+  const targetText = content.slice(matchPosition, matchPosition + beforeLines.length).join('\n');
   
-  // Build the target text sequentially like in applyContextMatching
-  const targetLines: string[] = [];
-  let previousIndent = '';
-  let sourceIndex = editRegionStart;
-  let lastChangeWasRemove = false;
-  let blockIndent = '';
+  // Apply the patch
+  const [patchedText] = dmp.patch_apply(patch, targetText);
   
-  // Detect block indentation from context
-  for (const line of editRegion) {
-    const match = line.match(/^(\s+)/);
-    if (match) {
-      blockIndent = match[1];
-      break;
-    }
-  }
+  // Split patched text back into lines
+  const patchedLines = patchedText.split('\n');
   
-  console.log('\nDMP Debug - Processing Changes:');
-  for (const change of hunk.changes) {
-    console.log('\nChange:', {
-      type: change.type,
-      content: change.content,
-      sourceIndex,
-      lastChangeWasRemove
-    });
-
-    if (change.type === 'context') {
-      // For context lines, preserve exact content including empty lines
-      const originalLine = content[sourceIndex];
-      console.log('Context line - original:', originalLine);
-      if (originalLine !== undefined) {
-        targetLines.push(originalLine);
-        // Update block indent if this is a block start
-        if (originalLine.trim().endsWith('{')) {
-          blockIndent = originalLine.match(/^(\s+)/)?.[1] || '';
-        }
-      } else {
-        targetLines.push(change.originalLine || (change.indent + change.content));
-      }
-      previousIndent = change.indent;
-      if (!lastChangeWasRemove) {
-        sourceIndex++;
-      }
-      lastChangeWasRemove = false;
-    } else if (change.type === 'add') {
-      const indent = change.indent || inferIndentation(change.content, 
-        hunk.changes.filter(c => c.type === 'context' && c.originalLine).map(c => c.originalLine || ''),
-        previousIndent
-      );
-      targetLines.push(indent + change.content);
-      previousIndent = indent;
-      lastChangeWasRemove = false;
-    } else if (change.type === 'remove') {
-      sourceIndex++;
-      lastChangeWasRemove = true;
-    }
-    console.log('Current targetLines:', targetLines);
-  }
-
-  // Add remaining block content if we're in a block
-  while (sourceIndex < editRegionEnd) {
-    const line = content[sourceIndex];
-    if (line !== undefined) {
-      targetLines.push(line);
-    }
-    sourceIndex++;
-  }
-
-  const targetText = targetLines.join('\n');
-  console.log('\nDMP Debug - Target Text:');
-  console.log(targetText);
-
-  const patch = dmp.patch_make(editText, targetText);
-  console.log('\nDMP Debug - Patch:');
-  console.log(patch);
-
-  const [patchedText] = dmp.patch_apply(patch, editText);
-  console.log('\nDMP Debug - Patched Text:');
-  console.log(patchedText);
-  
-  // Construct result with edited portion
+  // Construct the final result
   const newResult = [
-    ...content.slice(0, editRegionStart),
-    ...patchedText.split('\n'),
-    ...content.slice(editRegionEnd)
+    ...content.slice(0, matchPosition),
+    ...patchedLines,
+    ...content.slice(matchPosition + beforeLines.length)
   ];
-
-  console.log('\nDMP Debug - Result Construction:');
-  console.log('Prefix:', content.slice(0, editRegionStart));
-  console.log('Patched:', patchedText.split('\n'));
-  console.log('Suffix:', content.slice(editRegionEnd));
-
-  const similarity = getDMPSimilarity(editText, patchedText)
-  const confidence = validateEditResult(hunk, patchedText);
   
-  return { 
+  // Calculate confidence
+  const similarity = getDMPSimilarity(beforeText, targetText);
+  const confidence = validateEditResult(hunk, patchedText, 'dmp');
+  
+  return {
     confidence: similarity * confidence,
     result: newResult,
     strategy: 'dmp'
@@ -327,7 +236,7 @@ async function applyGit(hunk: Hunk, content: string[], matchPosition: number): P
       const osrResult = (await memfs.promises.readFile('/file.txt')).toString();
       const osrSimilarity = getDMPSimilarity(editText, osrResult)
 
-      const confidence = validateEditResult(hunk, osrResult);
+      const confidence = validateEditResult(hunk, osrResult, 'git-osr');
       
       if (osrSimilarity * confidence > 0.9) {
         // Construct result with edited portion
@@ -372,7 +281,7 @@ async function applyGit(hunk: Hunk, content: string[], matchPosition: number): P
       const srsoResult = (await memfs.promises.readFile('/file.txt')).toString();
       const srsoSimilarity = getDMPSimilarity(editText, srsoResult)
 
-      const confidence = validateEditResult(hunk, srsoResult);
+      const confidence = validateEditResult(hunk, srsoResult, 'git-srso');
 
       // Construct result with edited portion
       const newResult = [
@@ -409,8 +318,8 @@ export async function applyEdit(hunk: Hunk, content: string[], matchPosition: nu
 
   // Try each strategy in sequence until one succeeds
   const strategies = [
-    { name: 'context', apply: () => applyContextMatching(hunk, content, matchPosition) },
     { name: 'dmp', apply: () => applyDMP(hunk, content, matchPosition) },
+    { name: 'context', apply: () => applyContextMatching(hunk, content, matchPosition) },
     { name: 'git', apply: () => applyGit(hunk, content, matchPosition) }
   ];
 
