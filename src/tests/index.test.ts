@@ -15,7 +15,7 @@ line3`;
 -line3
 +modified line3`;
 
-    const result = await main(original, diff);
+    const result = await main(original, diff, true);
     
     expect(result).toBe(`line1
 new line
@@ -44,7 +44,7 @@ line5`;
 +modified line5
 +new line at end`;
 
-    const result = await main(original, diff);
+    const result = await main(original, diff, true);
     
     expect(result).toBe(`line1
 new line
@@ -92,7 +92,7 @@ line10`;
 +final line
 +very last line`;
 
-    const result = await main(original, diff);
+    const result = await main(original, diff, true);
     
     expect(result).toBe(`line1
 header line
@@ -154,7 +154,7 @@ no indent
   back to single
 last line`;
 
-    const result = await main(original, diff);
+    const result = await main(original, diff, true);
     console.log('Result:', result);
     expect(result).toBe(expected);
   });
@@ -184,7 +184,7 @@ const expected = `def factorial(number):
     else:
         return number * factorial(number-1)`
 
-    const result = await main(original, diff);
+    const result = await main(original, diff, true);
     expect(result).toBe(expected);
   });
 });
