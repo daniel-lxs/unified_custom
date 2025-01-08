@@ -36,35 +36,43 @@ export function applyContextMatching(hunk: Hunk, content: string[], matchPositio
   const newResult = [...content.slice(0, matchPosition)];
   let sourceIndex = matchPosition;
   let previousIndent = '';
-
-  const hunkChanges = hunk.changes.filter(c => c.type !== 'context');
+  let lastChangeWasRemove = false;  // Track if last change was a remove
 
   for (const change of hunk.changes) {
+
     if (change.type === 'context') {
       newResult.push(change.originalLine || (change.indent + change.content));
       previousIndent = change.indent;
-      sourceIndex++;
+      if (!lastChangeWasRemove) {  // Only increment if we didn't just remove a line
+        sourceIndex++;
+      }
+      lastChangeWasRemove = false;
     } else if (change.type === 'add') {
       const indent = change.indent || inferIndentation(change.content, 
-        hunk.changes.filter(c => c.type === 'context').map(c => c.originalLine || ''),
+        hunk.changes.filter(c => c.type === 'context' && c.originalLine).map(c => c.originalLine || ''),
         previousIndent
       );
       newResult.push(indent + change.content);
       previousIndent = indent;
+      lastChangeWasRemove = false;
     } else if (change.type === 'remove') {
       sourceIndex++;
+      lastChangeWasRemove = true;
     }
   }
 
   newResult.push(...content.slice(sourceIndex));
   
-  // Validate the result
+  // Calculate the window size based on all changes
+  const windowSize = hunk.changes.length;
+  
+  // Validate the result using the full window size
   const similarity = getDMPSimilarity(
-    content.slice(matchPosition, matchPosition + hunk.changes.length).join('\n'),
-    newResult.slice(matchPosition, matchPosition + hunk.changes.length).join('\n')
+    content.slice(matchPosition, matchPosition + windowSize).join('\n'),
+    newResult.slice(matchPosition, matchPosition + windowSize).join('\n')
   )
 
-  const confidence = validateEditResult(hunk, newResult.slice(matchPosition, matchPosition + hunkChanges.length + 1).join('\n'));
+  const confidence = validateEditResult(hunk, newResult.slice(matchPosition, matchPosition + windowSize).join('\n'));
 
   return { 
     confidence: similarity * confidence,
@@ -80,40 +88,131 @@ export function applyDMP(hunk: Hunk, content: string[], matchPosition: number): 
   }
 
   const dmp = new diff_match_patch();
-  const editRegion = content.slice(matchPosition, matchPosition + hunk.changes.length);
+  
+  // Calculate edit region - look for block boundaries
+  let editRegionStart = matchPosition;
+  let editRegionEnd = matchPosition + hunk.changes.length;
+  
+  // Look back for block start (e.g. enum declaration)
+  for (let i = matchPosition - 1; i >= 0; i--) {
+    const line = content[i]?.trim();
+    if (line && (line.startsWith('export') || line.startsWith('enum') || line.endsWith('{'))) {
+      editRegionStart = i;
+      break;
+    }
+    if (line === '') break; // Stop at empty line
+  }
+  
+  // Look ahead for block end
+  for (let i = editRegionEnd; i < content.length; i++) {
+    const line = content[i]?.trim();
+    if (line === '}') {
+      editRegionEnd = i + 1; // Include the closing brace
+      break;
+    }
+    if (line === '') break; // Stop at empty line
+  }
+  
+  const editRegion = content.slice(editRegionStart, editRegionEnd);
+  console.log('\nDMP Debug - Edit Region:');
+  console.log('editRegionStart:', editRegionStart);
+  console.log('editRegionEnd:', editRegionEnd);
+  console.log('editRegion:', editRegion);
+  
   const editText = editRegion.join('\n');
+  console.log('\nDMP Debug - Edit Text:');
+  console.log(editText);
   
   // Build the target text sequentially like in applyContextMatching
-  let targetText = '';
+  const targetLines: string[] = [];
   let previousIndent = '';
+  let sourceIndex = editRegionStart;
+  let lastChangeWasRemove = false;
+  let blockIndent = '';
   
+  // Detect block indentation from context
+  for (const line of editRegion) {
+    const match = line.match(/^(\s+)/);
+    if (match) {
+      blockIndent = match[1];
+      break;
+    }
+  }
+  
+  console.log('\nDMP Debug - Processing Changes:');
   for (const change of hunk.changes) {
+    console.log('\nChange:', {
+      type: change.type,
+      content: change.content,
+      sourceIndex,
+      lastChangeWasRemove
+    });
+
     if (change.type === 'context') {
-      targetText += (change.originalLine || (change.indent + change.content)) + '\n';
+      // For context lines, preserve exact content including empty lines
+      const originalLine = content[sourceIndex];
+      console.log('Context line - original:', originalLine);
+      if (originalLine !== undefined) {
+        targetLines.push(originalLine);
+        // Update block indent if this is a block start
+        if (originalLine.trim().endsWith('{')) {
+          blockIndent = originalLine.match(/^(\s+)/)?.[1] || '';
+        }
+      } else {
+        targetLines.push(change.originalLine || (change.indent + change.content));
+      }
       previousIndent = change.indent;
+      if (!lastChangeWasRemove) {
+        sourceIndex++;
+      }
+      lastChangeWasRemove = false;
     } else if (change.type === 'add') {
       const indent = change.indent || inferIndentation(change.content, 
-        hunk.changes.filter(c => c.type === 'context').map(c => c.originalLine || ''),
+        hunk.changes.filter(c => c.type === 'context' && c.originalLine).map(c => c.originalLine || ''),
         previousIndent
       );
-      targetText += indent + change.content + '\n';
+      targetLines.push(indent + change.content);
       previousIndent = indent;
+      lastChangeWasRemove = false;
+    } else if (change.type === 'remove') {
+      sourceIndex++;
+      lastChangeWasRemove = true;
     }
-    // Skip remove changes as they shouldn't appear in target
+    console.log('Current targetLines:', targetLines);
   }
 
-  // Trim the trailing newline
-  targetText = targetText.replace(/\n$/, '');
+  // Add remaining block content if we're in a block
+  while (sourceIndex < editRegionEnd) {
+    const line = content[sourceIndex];
+    if (line !== undefined) {
+      targetLines.push(line);
+    }
+    sourceIndex++;
+  }
+
+  const targetText = targetLines.join('\n');
+  console.log('\nDMP Debug - Target Text:');
+  console.log(targetText);
 
   const patch = dmp.patch_make(editText, targetText);
+  console.log('\nDMP Debug - Patch:');
+  console.log(patch);
+
   const [patchedText] = dmp.patch_apply(patch, editText);
+  console.log('\nDMP Debug - Patched Text:');
+  console.log(patchedText);
   
   // Construct result with edited portion
   const newResult = [
-    ...content.slice(0, matchPosition),
+    ...content.slice(0, editRegionStart),
     ...patchedText.split('\n'),
-    ...content.slice(matchPosition + hunk.changes.length)
+    ...content.slice(editRegionEnd)
   ];
+
+  console.log('\nDMP Debug - Result Construction:');
+  console.log('Prefix:', content.slice(0, editRegionStart));
+  console.log('Patched:', patchedText.split('\n'));
+  console.log('Suffix:', content.slice(editRegionEnd));
 
   const similarity = getDMPSimilarity(editText, patchedText)
   const confidence = validateEditResult(hunk, patchedText);
@@ -299,7 +398,7 @@ async function applyGit(hunk: Hunk, content: string[], matchPosition: number): P
 }
 
 // Main edit function that tries strategies sequentially
-export async function applyEdit(hunk: Hunk, content: string[], matchPosition: number, confidence: number, debug: boolean = false): Promise<EditResult> {
+export async function applyEdit(hunk: Hunk, content: string[], matchPosition: number, confidence: number, debug: string = 'false'): Promise<EditResult> {
 
   // Don't attempt any edits if confidence is too low and not in debug mode
   const MIN_CONFIDENCE = 0.9;
@@ -315,7 +414,7 @@ export async function applyEdit(hunk: Hunk, content: string[], matchPosition: nu
     { name: 'git', apply: () => applyGit(hunk, content, matchPosition) }
   ];
 
-  if (debug) {
+  if (debug !== '') {
     // In debug mode, try all strategies and return the first success
     const results = await Promise.all(strategies.map(async strategy => {
       console.log(`Attempting edit with ${strategy.name} strategy...`);
@@ -324,13 +423,14 @@ export async function applyEdit(hunk: Hunk, content: string[], matchPosition: nu
       return result;
     }));
     
-    const successfulResults = results.filter(result => result.confidence > MIN_CONFIDENCE);
+    /*const successfulResults = results.filter(result => result.confidence > MIN_CONFIDENCE);
     if (successfulResults.length > 0) {
       const bestResult = successfulResults.reduce((best, current) => 
         current.confidence > best.confidence ? current : best
       );
       return bestResult;
-    }
+    }*/
+    return results.find(result => result.strategy === debug) || { confidence: 0, result: content, strategy: 'none' };
   } else {
     // Normal mode - try strategies sequentially until one succeeds
     for (const strategy of strategies) {
