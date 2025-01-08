@@ -102,6 +102,9 @@ export function applyDMP(hunk: Hunk, content: string[], matchPosition: number): 
     // Skip remove changes as they shouldn't appear in target
   }
 
+  // Trim the trailing newline
+  targetText = targetText.replace(/\n$/, '');
+
   const patch = dmp.patch_make(editText, targetText);
   const [patchedText] = dmp.patch_apply(patch, editText);
   
