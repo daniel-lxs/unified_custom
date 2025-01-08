@@ -75,9 +75,9 @@ export function validateEditResult(hunk: Hunk, result: string): number {
   console.log('expectedSkeleton:', expectedSkeleton);
   console.log('result:', result);
   
-  // Scale between 0.98 and 1.0 (2% impact) based on expected similarity
+  // Scale between 0.98 and 1.0 (4% impact) based on expected similarity
   const multiplier = expectedSimilarity < MIN_CONFIDENCE 
-    ? 0.98 + (0.02 * expectedSimilarity) 
+    ? 0.96 + (0.04 * expectedSimilarity) 
     : 1;
 
   return multiplier;
