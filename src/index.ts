@@ -67,7 +67,8 @@ function parseUnifiedDiff(diff: string): Diff {
 export async function main(originalContent: string, diff: string, debug: boolean = false): Promise<string> {
   const MIN_CONFIDENCE = 0.9;
   const parsedDiff = parseUnifiedDiff(diff);
-  let result = originalContent.split('\n');
+  const originalLines = originalContent.split('\n');
+  let result = [...originalLines];
   
   for (const hunk of parsedDiff.hunks) {
     const contextStr = prepareSearchString(hunk.changes);
@@ -76,9 +77,8 @@ export async function main(originalContent: string, diff: string, debug: boolean
     const editResult = await applyEdit(hunk, result, matchPosition, confidence, debug);
     if (editResult.confidence > MIN_CONFIDENCE) {
       result = editResult.result;
-      console.log(`Successfully applied edit using ${editResult.strategy} strategy with confidence ${editResult.confidence}`);
     } else {
-      console.log(`Failed to apply edit using ${editResult.strategy} strategy`);
+      return originalContent // Return original content if any edit fails
     }
   }
 
