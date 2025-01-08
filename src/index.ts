@@ -64,7 +64,7 @@ function parseUnifiedDiff(diff: string): Diff {
 }
 
 // Main function that uses pre/post processing
-export async function main(originalContent: string, diff: string, debug: boolean = false): Promise<string> {
+export async function main(originalContent: string, diff: string, debug: string = ''): Promise<string> {
   const MIN_CONFIDENCE = 0.9;
   const parsedDiff = parseUnifiedDiff(diff);
   const originalLines = originalContent.split('\n');
