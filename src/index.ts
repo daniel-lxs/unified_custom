@@ -4,7 +4,7 @@ import { applyEdit } from './editStrategies';
 
 // Enhanced unified diff parser with indentation preservation
 function parseUnifiedDiff(diff: string): Diff {
-  const MAX_CONTEXT_LINES = 3; // Number of context lines to keep before/after changes
+  const MAX_CONTEXT_LINES = 6; // Number of context lines to keep before/after changes
   const lines = diff.split('\n');
   const hunks: Hunk[] = [];
   let currentHunk: Hunk | null = null;
